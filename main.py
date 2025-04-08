@@ -1,3 +1,4 @@
+import os
 import random
 import pika
 import sqlite3
@@ -5,9 +6,18 @@ import json
 import time
 from datetime import datetime, UTC
 
+credentials = pika.PlainCredentials(
+    os.getenv("RABBITMQ_USER", "guest"),
+    os.getenv("RABBITMQ_PASS", "guest")
+)
+parameters = pika.ConnectionParameters(
+    host=os.getenv("RABBITMQ_HOST", "localhost"),
+    credentials=credentials
+)
+
 DB_NAME = "zigbee.db"
 QUEUE_NAME = "temperature_data"
-RABBITMQ_HOST = "localhost"
+RABBITMQ_HOST = parameters.host
 
 # 1. Init BDD
 def init_db():
@@ -60,7 +70,7 @@ def publish_message(channel, payload: dict):
 # 5. Connexion RabbitMQ
 def connect_to_rabbitmq():
     try:
-        connection = pika.BlockingConnection(pika.ConnectionParameters(host=RABBITMQ_HOST))
+        connection = pika.BlockingConnection(parameters)
         channel = connection.channel()
         channel.queue_declare(queue=QUEUE_NAME)
         print("[✓] Connexion RabbitMQ réussie")
