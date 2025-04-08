@@ -7,17 +7,21 @@ import time
 from datetime import datetime, UTC
 
 credentials = pika.PlainCredentials(
-    os.getenv("RABBITMQ_USER", "guest"),
-    os.getenv("RABBITMQ_PASS", "guest")
+    os.getenv("RABBITMQ_DEFAULT_USER", "guest"),
+    os.getenv("RABBITMQ_DEFAULT_PASS", "guest")
 )
 parameters = pika.ConnectionParameters(
     host=os.getenv("RABBITMQ_HOST", "localhost"),
     credentials=credentials
 )
 
+print("Paramètres: " + os.getenv("RABBITMQ_DEFAULT_USER", "guest") + " , " + os.getenv("RABBITMQ_DEFAULT_PASS", "guest"))
+
 DB_NAME = "zigbee.db"
 QUEUE_NAME = "temperature_data"
-RABBITMQ_HOST = parameters.host
+
+# parameters.host = "localhost"
+print("host: " + parameters.host)
 
 # 1. Init BDD
 def init_db():
