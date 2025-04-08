@@ -5,6 +5,8 @@ import sqlite3
 import json
 import time
 from datetime import datetime, UTC
+from dotenv import load_dotenv
+load_dotenv()  # Charge le fichier .env
 
 credentials = pika.PlainCredentials(
     os.getenv("RABBITMQ_DEFAULT_USER", "guest"),
