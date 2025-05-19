@@ -49,26 +49,69 @@ def store_failed_message(payload: str):
         conn.commit()
     print(f"[!] Message stocké en local : {payload}")
 
-# 3. Retry en base
-def retry_failed_messages(channel):
+def send_agregate_message(channel, current_payload: dict):
     with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT id, payload FROM failed_messages")
         messages = cursor.fetchall()
 
+        temperatures = []
+        humidities = []
+        timestamps = []
+        device_ids = []
+        ids_to_delete = []
+
+        # Ajouter les messages stockés
         for msg_id, payload in messages:
+            try:
+                data = json.loads(payload)
+                decoded = parse_lorawan_payload(data['payload'])
+                if decoded:
+                    temperatures.append(decoded['temperature'])
+                    humidities.append(decoded['humidity'])
+                    timestamps.append(data['timestamp'])
+                    device_ids.append(data['device_id'])
+                    ids_to_delete.append(msg_id)
+            except Exception as e:
+                print(f"[✗] Erreur parsing message ID {msg_id} : {e}")
+
+        # Ajouter la mesure actuelle si elle est valide
+        decoded_current = parse_lorawan_payload(current_payload['payload'])
+        if decoded_current:
+            temperatures.append(decoded_current['temperature'])
+            humidities.append(decoded_current['humidity'])
+            timestamps.append(current_payload['timestamp'])
+            device_ids.append(current_payload['device_id'])
+
+        # Si au moins une donnée est disponible, on fait une moyenne
+        if temperatures and humidities:
+            avg_temp = round(sum(temperatures) / len(temperatures), 1)
+            avg_hum = round(sum(humidities) / len(humidities), 1)
+            print(f"temperature: {avg_temp} humidity: {avg_hum}")
+
+            aggregated_payload = {
+                "device_id": device_ids[0] if device_ids else "unknown",
+                "payload": format_lorawan_payload(avg_temp, avg_hum),
+                "timestamp": datetime.now(UTC).isoformat()
+            }
+
             try:
                 channel.basic_publish(
                     exchange='',
                     routing_key=QUEUE_NAME,
-                    body=payload,
+                    body=json.dumps(aggregated_payload),
                     properties=pika.BasicProperties(delivery_mode=2)
-                    )
-                print(f"[✓] Message ré-envoyé : {payload}")
-                cursor.execute("DELETE FROM failed_messages WHERE id = ?", (msg_id,))
+                )
+                print(f"[✓] Message agrégé envoyé : {aggregated_payload}")
+
+                # Supprimer les anciens messages si tout est OK
+                if ids_to_delete:
+                    cursor.executemany("DELETE FROM failed_messages WHERE id = ?", [(msg_id,) for msg_id in ids_to_delete])
+                    conn.commit()
             except Exception as e:
-                print(f"[✗] Échec republication ID {msg_id} : {e}")
-        conn.commit()
+                print(f"[✗] Échec envoi agrégé : {e}")
+        else:
+            print("[~] Aucune donnée valide à envoyer.")
 
 # 4. Envoi avec fallback
 def publish_message(channel, payload: dict):
@@ -100,11 +143,33 @@ def connect_to_rabbitmq():
 def format_lorawan_payload(temperature: float, humidity: float) -> str:
     # Exemple d'encodage : 1 octet pour la température, 1 octet pour l'humidité * 2 (précision 0.5)
     # Température (°C) * 10 pour garder une décimale, ex : 23.4 -> 234 -> 0xEA
-    temp_encoded = int(temperature * 10)
-    hum_encoded = int(humidity * 2)  # 0.5 précision
+    temp_encoded = round(temperature * 10)
+    hum_encoded = round(humidity * 2)
 
     # Format hexadécimal sur 2 octets chacun
     return f"{temp_encoded:04X}{hum_encoded:04X}"
+
+def parse_lorawan_payload(payload: str) -> dict:
+    try:
+        # Extraire les 4 premiers caractères (2 octets) pour la température
+        temp_hex = payload[:4]
+        hum_hex = payload[4:8]
+
+        # Convertir de hex vers int
+        temp_encoded = int(temp_hex, 16)
+        hum_encoded = int(hum_hex, 16)
+
+        # Reconvertir selon l'encodage d'origine
+        temperature = temp_encoded / 10.0
+        humidity = hum_encoded / 2.0
+
+        return {
+            "temperature": temperature,
+            "humidity": humidity
+        }
+    except Exception as e:
+        print(f"[✗] Erreur décodage payload : {payload} → {e}")
+        return None
 
 # 6. Boucle principale
 def main_loop():
@@ -122,14 +187,14 @@ def main_loop():
                 "payload": format_lorawan_payload(temperature, humidity),
                 "timestamp": datetime.now(UTC).isoformat()
             }
+            print(f"temperature: {temperature} humidity: {humidity}")
 
             # Si pas connecté, on tente de se reconnecter
             if channel is None or connection.is_closed:
                 connection, channel = connect_to_rabbitmq()
 
             if channel:
-                retry_failed_messages(channel)
-                publish_message(channel, lorawan_payload)
+                send_agregate_message(channel, lorawan_payload)
             else:
                 print("[~] Pas de connexion active, stockage uniquement")
 
