@@ -1,12 +1,14 @@
 import os
+from dotenv import load_dotenv
 import random
 import pika
 import sqlite3
 import json
 import time
 from datetime import datetime, UTC
-from dotenv import load_dotenv
-load_dotenv()  # Charge le fichier .env
+
+# Charger les variables depuis .env
+load_dotenv()
 
 credentials = pika.PlainCredentials(
     os.getenv("RABBITMQ_DEFAULT_USER", "guest"),
@@ -17,13 +19,13 @@ parameters = pika.ConnectionParameters(
     credentials=credentials
 )
 
-print("Paramètres: " + os.getenv("RABBITMQ_DEFAULT_USER", "guest") + " , " + os.getenv("RABBITMQ_DEFAULT_PASS", "guest"))
+# print("Paramètres: " + os.getenv("RABBITMQ_DEFAULT_USER", "guest") + " , " + os.getenv("RABBITMQ_DEFAULT_PASS", "guest"))
 
 DB_NAME = "zigbee.db"
 QUEUE_NAME = "temperature_data"
 
 # parameters.host = "localhost"
-print("host: " + parameters.host)
+# print("host: " + parameters.host)
 
 # 1. Init BDD
 def init_db():
@@ -56,7 +58,12 @@ def retry_failed_messages(channel):
 
         for msg_id, payload in messages:
             try:
-                channel.basic_publish(exchange='', routing_key=QUEUE_NAME, body=payload)
+                channel.basic_publish(
+                    exchange='',
+                    routing_key=QUEUE_NAME,
+                    body=payload,
+                    properties=pika.BasicProperties(delivery_mode=2)
+                    )
                 print(f"[✓] Message ré-envoyé : {payload}")
                 cursor.execute("DELETE FROM failed_messages WHERE id = ?", (msg_id,))
             except Exception as e:
@@ -67,7 +74,12 @@ def retry_failed_messages(channel):
 def publish_message(channel, payload: dict):
     payload_str = json.dumps(payload)
     try:
-        channel.basic_publish(exchange='', routing_key=QUEUE_NAME, body=payload_str)
+        channel.basic_publish(
+            exchange='',
+            routing_key=QUEUE_NAME,
+            body=payload_str,
+            properties=pika.BasicProperties(delivery_mode=2)
+            )
         print(f"[→] Message envoyé : {payload_str}")
     except Exception as e:
         print(f"[✗] Erreur RabbitMQ : {e}")
@@ -78,12 +90,21 @@ def connect_to_rabbitmq():
     try:
         connection = pika.BlockingConnection(parameters)
         channel = connection.channel()
-        channel.queue_declare(queue=QUEUE_NAME)
+        channel.queue_declare(queue=QUEUE_NAME, durable=True, exclusive=False)
         print("[✓] Connexion RabbitMQ réussie")
         return connection, channel
     except Exception as e:
         print(f"[!] Impossible de se connecter à RabbitMQ : {e}")
         return None, None
+    
+def format_lorawan_payload(temperature: float, humidity: float) -> str:
+    # Exemple d'encodage : 1 octet pour la température, 1 octet pour l'humidité * 2 (précision 0.5)
+    # Température (°C) * 10 pour garder une décimale, ex : 23.4 -> 234 -> 0xEA
+    temp_encoded = int(temperature * 10)
+    hum_encoded = int(humidity * 2)  # 0.5 précision
+
+    # Format hexadécimal sur 2 octets chacun
+    return f"{temp_encoded:04X}{hum_encoded:04X}"
 
 # 6. Boucle principale
 def main_loop():
@@ -92,10 +113,13 @@ def main_loop():
 
     try:
         while True:
+            temperature= round(random.uniform(20.0, 25.0), 1)
+            humidity= round(random.uniform(40.0, 60.0), 1)
+
             # Donnée simulée
-            payload = {
-                "temperature": round(random.uniform(20.0, 25.0), 1),
-                "humidity": round(random.uniform(40.0, 60.0), 1),
+            lorawan_payload = {
+                "device_id": "sim01",
+                "payload": format_lorawan_payload(temperature, humidity),
                 "timestamp": datetime.now(UTC).isoformat()
             }
 
@@ -105,12 +129,12 @@ def main_loop():
 
             if channel:
                 retry_failed_messages(channel)
-                publish_message(channel, payload)
+                publish_message(channel, lorawan_payload)
             else:
                 print("[~] Pas de connexion active, stockage uniquement")
 
                 # Stockage immédiat si on n'a pas pu envoyer
-                store_failed_message(json.dumps(payload))
+                store_failed_message(json.dumps(lorawan_payload))
 
             time.sleep(5)
 
