@@ -5,7 +5,6 @@ import pika
 import sqlite3
 import json
 import time
-from datetime import datetime, UTC
 
 # Charger les variables depuis .env
 load_dotenv()
@@ -34,8 +33,7 @@ def init_db():
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS failed_messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            payload TEXT NOT NULL,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            payload TEXT NOT NULL
         )
     ''')
     conn.commit()
@@ -57,7 +55,6 @@ def send_agregate_message(channel, current_payload: dict):
 
         temperatures = []
         humidities = []
-        timestamps = []
         device_ids = []
         ids_to_delete = []
 
@@ -69,7 +66,6 @@ def send_agregate_message(channel, current_payload: dict):
                 if decoded:
                     temperatures.append(decoded['temperature'])
                     humidities.append(decoded['humidity'])
-                    timestamps.append(data['timestamp'])
                     device_ids.append(data['device_id'])
                     ids_to_delete.append(msg_id)
             except Exception as e:
@@ -80,19 +76,16 @@ def send_agregate_message(channel, current_payload: dict):
         if decoded_current:
             temperatures.append(decoded_current['temperature'])
             humidities.append(decoded_current['humidity'])
-            timestamps.append(current_payload['timestamp'])
             device_ids.append(current_payload['device_id'])
 
         # Si au moins une donnée est disponible, on fait une moyenne
         if temperatures and humidities:
             avg_temp = round(sum(temperatures) / len(temperatures), 1)
             avg_hum = round(sum(humidities) / len(humidities), 1)
-            print(f"temperature: {avg_temp} humidity: {avg_hum}")
 
             aggregated_payload = {
                 "device_id": device_ids[0] if device_ids else "unknown",
-                "payload": format_lorawan_payload(avg_temp, avg_hum),
-                "timestamp": datetime.now(UTC).isoformat()
+                "payload": format_lorawan_payload(avg_temp, avg_hum)
             }
 
             try:
@@ -184,10 +177,8 @@ def main_loop():
             # Donnée simulée
             lorawan_payload = {
                 "device_id": "sim01",
-                "payload": format_lorawan_payload(temperature, humidity),
-                "timestamp": datetime.now(UTC).isoformat()
+                "payload": format_lorawan_payload(temperature, humidity)
             }
-            print(f"temperature: {temperature} humidity: {humidity}")
 
             # Si pas connecté, on tente de se reconnecter
             if channel is None or connection.is_closed:
